@@ -1,8 +1,9 @@
 package src;
 
 import javafx.application.Application;
-import javafx.application.Platform;
+import javafx.beans.value.ChangeListener;
 import javafx.concurrent.Task;
+import javafx.event.ActionEvent;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -21,13 +22,14 @@ import java.io.*;
 
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.*;
 
 
 /**
  * The JavaFX Multi-threaded file downloader application that uses
  * multiple threads to download parts of a file in parallel.
- * <p>
- * // For now it's still just a single thread downloader and I still working on how to use multiple thread.
  *
  * @author Bheem Suttipong
  */
@@ -49,27 +51,34 @@ public class FlashGet extends Application {
      * String to remember last directory used by FileChooser.
      */
     private static String lastVisitedDirectory = System.getProperty("user.home");
-    /**
-     * The download thread.
-     */
-    private Thread thread = new Thread();
 
+    /**
+     * Progress bar showing how far the work in each thread done.
+     */
+    private ProgressBar threadBar1;
+    private ProgressBar threadBar2;
+    private ProgressBar threadBar3;
+    private ProgressBar threadBar4;
+    /**
+     * List that contains all running task
+     */
+    private List<Task<Long>> taskList = new ArrayList<>();
 
     /**
      * Setting up the stage.
      */
     public void start(Stage stage) {
         BorderPane borderPane = new BorderPane();
-        Pane loaderPane = initLoader();
-        loaderPane.styleProperty().set("-fx-background-color: #3B3B40");
-        Separator separator = new Separator();
-        separator.styleProperty().set("-fx-background-color: #BCBCBC");
-        AnchorPane loadingPane = initLoading();
-        loadingPane.styleProperty().set("-fx-background-color: #BCBCBC");
+        Pane inputPane = initInputPane();
+        inputPane.styleProperty().set("-fx-background-color: #3B3B40");
+        AnchorPane infoPane = initInfoPane();
+        infoPane.styleProperty().set("-fx-background-color: #BCBCBC");
+        Pane threadPane = initThreadPane();
+        threadPane.styleProperty().set("-fx-background-color: #BCBCBC");
 
-        borderPane.setTop(loaderPane);
-        borderPane.setCenter(separator);
-        borderPane.setBottom(loadingPane);
+        borderPane.setTop(inputPane);
+        borderPane.setCenter(infoPane);
+        borderPane.setBottom(threadPane);
 
         Scene scene = new Scene(borderPane);
         stage.setScene(scene);
@@ -81,9 +90,9 @@ public class FlashGet extends Application {
     }
 
     /**
-     * Initialize components for the loaderPane to display.
+     * Initialize components for the inputPane to display.
      */
-    private Pane initLoader() {
+    private Pane initInputPane() {
         FlowPane pane = new FlowPane();
         pane.setPrefSize(700.0, 50.0);
         pane.setAlignment(Pos.CENTER);
@@ -99,45 +108,7 @@ public class FlashGet extends Application {
         Button downloadButton = new Button("Download");
         downloadButton.styleProperty().set("-fx-background-color: #EC5700");
         downloadButton.setTextFill(Color.web("#FFFFFF"));
-        downloadButton.setOnAction(e -> {
-            try {
-                URL url = new URL(urlField.getText());
-                URLConnection conn = url.openConnection();
-
-                if (conn.getContentLengthLong() > 0 && !thread.isAlive()) {
-                    FileChooser fileChooser = new FileChooser();
-                    fileChooser.setTitle("Save File");
-                    fileChooser.setInitialDirectory(new File(lastVisitedDirectory));
-                    fileChooser.getExtensionFilters().addAll(
-                            new FileChooser.ExtensionFilter("All Files", "*.*"),
-                            new FileChooser.ExtensionFilter("Text Files", "*.txt"),
-                            new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.gif"),
-                            new FileChooser.ExtensionFilter("Audio Files", "*.wav", "*.mp3", "*.aac"),
-                            new FileChooser.ExtensionFilter("Executable Files", "*.exe"),
-                            new FileChooser.ExtensionFilter("ZIP or RAR files", "*.zip", "*.rar"));
-
-
-                    File file = fileChooser.showSaveDialog(new Stage());
-
-                    if (file != null) {
-                        lastVisitedDirectory = file.getParent();
-                        fileNameLabel.setText(file.getName());
-                    }
-
-                    Task<Void> task = new DownloadTask(urlField.getText(), file);
-                    progressBar.progressProperty().bind(task.progressProperty());
-
-                    thread = new Thread(task);
-                    thread.setDaemon(true);
-                    thread.start();
-                }
-            } catch (IOException ex) {
-                Alert alert = new Alert(Alert.AlertType.ERROR, "Error: Invalid URL");
-                alert.show();
-            }
-
-
-        });
+        downloadButton.setOnAction(this::downloadHandle);
 
         Button clearButton = new Button("Clear");
         clearButton.styleProperty().set("-fx-background-color: #EC5700");
@@ -151,11 +122,11 @@ public class FlashGet extends Application {
     }
 
     /**
-     * Initialize components for the loadingPane to display.
+     * Initialize components for the infoPane to display.
      */
-    private AnchorPane initLoading() {
+    private AnchorPane initInfoPane() {
         AnchorPane pane = new AnchorPane();
-        pane.setPrefSize(700.0, 200.0);
+        pane.setPrefSize(700.0, 100.0);
         pane.setPadding(new Insets(10.0));
 
         Label Label1 = new Label("File name :");
@@ -188,16 +159,31 @@ public class FlashGet extends Application {
         cancelButton.styleProperty().set("-fx-background-color: #FFFFFF");
         cancelButton.setLayoutY(50.0);
         cancelButton.setLayoutX(600.0);
-        cancelButton.setOnAction(e -> {
-            if (thread.isAlive()) {
-                thread.stop();
-                progressLabel.setText("");
-                fileNameLabel.setText("");
-            }
-        });
+        cancelButton.setOnAction(this::cancelHandle);
 
         pane.getChildren().addAll(Label1, fileNameLabel, progressBar, progressLabel, cancelButton);
 
+        return pane;
+    }
+
+    /**
+     * Initialize components for the threadPane to display.
+     */
+    private Pane initThreadPane() {
+        FlowPane pane = new FlowPane();
+        pane.setPrefSize(700.0, 50.0);
+        pane.setAlignment(Pos.CENTER);
+        pane.setPadding(new Insets(10.0));
+        pane.setHgap(20.0);
+
+        Label label1 = new Label("Threads :");
+        label1.setFont(Font.font(14.0));
+        threadBar1 = new ProgressBar();
+        threadBar2 = new ProgressBar();
+        threadBar3 = new ProgressBar();
+        threadBar4 = new ProgressBar();
+
+        pane.getChildren().addAll(label1, threadBar1, threadBar2, threadBar3, threadBar4);
         return pane;
     }
 
@@ -209,60 +195,127 @@ public class FlashGet extends Application {
     }
 
     /**
-     * Task class to download files from URL
+     * Handle method for download button
      */
-    private class DownloadTask extends Task<Void> {
-        private String urlName;
-        final int BUFFER_SIZE = 16 * 1024;
-        private File file;
-
-        public DownloadTask(String urlName, File file) {
-            this.urlName = urlName;
-            this.file = file;
-        }
-
-        @Override
-        protected Void call() throws Exception {
-            String format = urlName.substring(urlName.lastIndexOf("."));
-            URL url = new URL(urlName);
+    private void downloadHandle(ActionEvent e) {
+        try {
+            taskList.clear();
+            URL url = new URL(urlField.getText());
             URLConnection conn = url.openConnection();
-            long fileLength = conn.getContentLengthLong();
+            long fileSize = conn.getContentLengthLong();
+            long quarterFileSize = fileSize / 4;
+            if (fileSize > 0) {
+                FileChooser fileChooser = new FileChooser();
+                fileChooser.setTitle("Save File");
+                fileChooser.setInitialDirectory(new File(lastVisitedDirectory));
+                fileChooser.getExtensionFilters().addAll(
+                        new FileChooser.ExtensionFilter("All Files", "*.*"),
+                        new FileChooser.ExtensionFilter("Text Files", "*.txt"),
+                        new FileChooser.ExtensionFilter("Image Files", "*.png", "*.jpg", "*.gif"),
+                        new FileChooser.ExtensionFilter("Audio Files", "*.wav", "*.mp3", "*.aac"),
+                        new FileChooser.ExtensionFilter("Executable Files", "*.exe"),
+                        new FileChooser.ExtensionFilter("ZIP or RAR files", "*.zip", "*.rar"));
 
-            byte[] buffer = new byte[BUFFER_SIZE];
-            try (InputStream in = conn.getInputStream();
-                 OutputStream out = getOutputStream(file)) {
-                long bytesRead = 0L;
-                do {
-                    int n = in.read(buffer);
-                    if (n < 0) break;
-                    out.write(buffer, 0, n);
-                    bytesRead += n;
+                File file = fileChooser.showSaveDialog(new Stage());
 
-                    long finalBytesRead = bytesRead;
-                    Platform.runLater(new Runnable() {
-                        @Override
-                        public void run() {
-                            progressLabel.setText(String.format("%d/%d", finalBytesRead, fileLength));
+                if (file != null) {
+                    lastVisitedDirectory = file.getParent();
+                    fileNameLabel.setText(file.getName());
+
+                    var ref = new Object() {
+                        long bytesDownloaded = 0L;
+                        long task1Downloaded = 0L;
+                        long task2Downloaded = 0L;
+                        long task3Downloaded = 0L;
+                        long task4Downloaded = 0L;
+                    };
+
+                    ChangeListener<Long> listener1 = (observableValue, oldValue, newValue) ->
+                    {
+                        ref.task1Downloaded = (newValue);
+                        ref.bytesDownloaded = ref.task1Downloaded + ref.task2Downloaded + ref.task3Downloaded + ref.task4Downloaded;
+                        progressLabel.setText(String.format("%d/%d", ref.bytesDownloaded, fileSize));
+                    };
+                    ChangeListener<Long> listener2 = (observableValue, oldValue, newValue) ->
+                    {
+                        ref.task2Downloaded = (newValue);
+                        ref.bytesDownloaded = ref.task1Downloaded + ref.task2Downloaded + ref.task3Downloaded + ref.task4Downloaded;
+                        progressLabel.setText(String.format("%d/%d", ref.bytesDownloaded, fileSize));
+                    };
+                    ChangeListener<Long> listener3 = (observableValue, oldValue, newValue) ->
+                    {
+                        ref.task3Downloaded = (newValue);
+                        ref.bytesDownloaded = ref.task1Downloaded + ref.task2Downloaded + ref.task3Downloaded + ref.task4Downloaded;
+                        progressLabel.setText(String.format("%d/%d", ref.bytesDownloaded, fileSize));
+                    };
+                    ChangeListener<Long> listener4 = (observableValue, oldValue, newValue) ->
+                    {
+                        ref.task4Downloaded = (newValue);
+                        ref.bytesDownloaded = ref.task1Downloaded + ref.task2Downloaded + ref.task3Downloaded + ref.task4Downloaded;
+                        progressLabel.setText(String.format("%d/%d", ref.bytesDownloaded, fileSize));
+                    };
+
+                    ExecutorService service = Executors.newFixedThreadPool(4, new ThreadFactory() {
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r) {
+                                @Override
+                                public void interrupt() {
+                                    super.interrupt();
+                                }
+                            };
+                            t.setDaemon(true);
+                            return t;
                         }
                     });
-                    updateProgress(bytesRead, fileLength);
-                } while (true);
-            } catch (Exception ignored) {
+
+                    Task<Long> task1 = new DownloadTask(urlField.getText(), file, 0, quarterFileSize);
+                    Task<Long> task2 = new DownloadTask(urlField.getText(), file, quarterFileSize, quarterFileSize);
+                    Task<Long> task3 = new DownloadTask(urlField.getText(), file, quarterFileSize + quarterFileSize, quarterFileSize);
+                    Task<Long> task4 = new DownloadTask(urlField.getText(), file, quarterFileSize + quarterFileSize + quarterFileSize, fileSize - (quarterFileSize * 3));
+
+                    task1.valueProperty().addListener(listener1);
+                    task2.valueProperty().addListener(listener2);
+                    task3.valueProperty().addListener(listener3);
+                    task4.valueProperty().addListener(listener4);
+
+                    taskList.add(task1);
+                    taskList.add(task2);
+                    taskList.add(task3);
+                    taskList.add(task4);
+
+                    threadBar1.progressProperty().bind(task1.progressProperty());
+                    threadBar2.progressProperty().bind(task2.progressProperty());
+                    threadBar3.progressProperty().bind(task3.progressProperty());
+                    threadBar4.progressProperty().bind(task4.progressProperty());
+
+                    progressBar.progressProperty().bind(task1.progressProperty().multiply(0.25)
+                            .add(task2.progressProperty().multiply(0.25))
+                            .add(task3.progressProperty().multiply(0.25))
+                            .add(task4.progressProperty().multiply(0.25)));
+
+                    for (Task<Long> t : taskList) {
+                        service.execute(t);
+                    }
+
+                    service.shutdown();
+                }
             }
-            return null;
+        } catch (IOException ex) {
+            Alert alert = new Alert(Alert.AlertType.ERROR, "Error: Invalid URL");
+            alert.show();
+        } catch (RejectedExecutionException ex) {
+            Alert alert = new Alert(Alert.AlertType.ERROR, "Error: Previous download is unfinished");
+            alert.show();
         }
     }
 
-    public FileOutputStream getOutputStream(File file) {
-        FileOutputStream fileOutputStream = null;
-        try {
-            if (!file.exists()) {
-                file.createNewFile();
+    /**
+     * Handle method for cancel button
+     */
+    private void cancelHandle(ActionEvent e) {
+        for (Task<Long> longTask : taskList) {
+            longTask.cancel();
             }
-            fileOutputStream = new FileOutputStream(file);
-        } catch (Exception ignored) {
+        taskList.clear();
         }
-        return fileOutputStream;
-    }
-
 }
